@@ -4,7 +4,7 @@
 
 // ⚠️ Pega aquí la URL de tu despliegue de Apps Script (acaba en /exec)
 const CONFIG = {
-  API_URL: "PEGA_AQUI_LA_URL_DE_TU_APPS_SCRIPT_/exec"
+  API_URL: "https://script.google.com/macros/s/AKfycbxhhvUurI9HkOVdeTsnysuYmItIqmVHUcEUL3TajS6L6vIB5XWqQoDw3wKPFVjVOTAp/exec"
 };
 
 /**
