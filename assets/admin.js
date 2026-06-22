@@ -331,52 +331,85 @@ async function renderTabControl(c) {
     return;
   }
 
-  cont.innerHTML = `<div id="control-live">Cargando…</div>`;
+  // Estructura fija del DOM — los contadores y la pregunta se actualizan
+  // quirúrgicamente sin re-renderizar la tarjeta entera cada sondeo.
+  cont.innerHTML = `
+    <div class="flap-row" style="margin-bottom:18px;">
+      <div class="flap"><div class="flap__value" id="fl-pregunta">-</div><div class="flap__label">Pregunta</div></div>
+      <div class="flap"><div class="flap__value" id="fl-concursantes">-</div><div class="flap__label">Concursantes</div></div>
+      <div class="flap"><div class="flap__value" id="fl-respuestas">-</div><div class="flap__label">Han respondido</div></div>
+    </div>
+    <div id="cl-pregunta-card"></div>
+    <div id="cl-acciones"></div>`;
+
+  let anteriorIdx = null;
+  let anteriorEstado = null;
+
+  function actualizarFlap(id, val) {
+    const el = document.getElementById(id);
+    if (!el || el.textContent === String(val)) return;
+    el.textContent = val;
+    el.parentElement.classList.remove("flap--update");
+    void el.parentElement.offsetWidth; // reflow para reiniciar animación
+    el.parentElement.classList.add("flap--update");
+  }
+
   const pintar = async () => {
-    const r = await apiGet("estadoPublico", { slug: c.slug });
+    // El admin usa estadoAdmin (POST) que incluye totalConcursantes y respuestasActual
+    const r = await apiPost("estadoAdmin", { token: state.token, slug: c.slug });
     if (!r.ok) return;
-    state.estadoLive = r;
-    const live = document.getElementById("control-live");
-    if (!live) return;
 
     const numPregunta = r.estado === "finalizado" ? r.totalPreguntas : r.indicePregunta + 1;
-    live.innerHTML = `
-      <div class="flap-row">
-        <div class="flap"><div class="flap__value">${numPregunta}/${r.totalPreguntas}</div><div class="flap__label">Pregunta</div></div>
-        <div class="flap"><div class="flap__value">${r.totalConcursantes}</div><div class="flap__label">Concursantes</div></div>
-        <div class="flap"><div class="flap__value">${r.respuestasActual}</div><div class="flap__label">Han respondido</div></div>
-      </div>
-      ${r.pregunta ? `
-        <div class="card" style="margin-top:18px;">
+    actualizarFlap("fl-pregunta",      numPregunta + "/" + r.totalPreguntas);
+    actualizarFlap("fl-concursantes",  r.totalConcursantes);
+    actualizarFlap("fl-respuestas",    r.respuestasActual);
+
+    // Solo re-renderiza la tarjeta de pregunta si cambió la pregunta
+    if (r.indicePregunta !== anteriorIdx) {
+      anteriorIdx = r.indicePregunta;
+      const card = document.getElementById("cl-pregunta-card");
+      if (card) card.innerHTML = r.pregunta ? `
+        <div class="card">
           <h3>${escapeHtml(r.pregunta.texto)}</h3>
           <div class="small muted" style="margin-top:10px;line-height:1.8;">
             ${["A","B","C","D"].map(L => `${L}) ${escapeHtml(r.pregunta["opcion"+L])}`).join("<br/>")}
           </div>
-        </div>` : ""}
-      ${r.estado === "activo" ? `
-        <button class="btn btn--gold btn--block" id="b-siguiente" style="margin-top:18px;">
-          ${r.indicePregunta + 1 >= r.totalPreguntas ? "Finalizar y revelar resultados" : "Siguiente pregunta"}
-        </button>
-        <button class="btn btn--ghost btn--block" id="b-finalizar" style="margin-top:10px;">Finalizar concurso ahora</button>
-      ` : `<div class="okbox" style="margin-top:18px;">Concurso finalizado. Mira la pestaña Resultados.</div>`}`;
+        </div>` : "";
+    }
 
-    const bs = document.getElementById("b-siguiente");
-    if (bs) bs.addEventListener("click", async () => {
-      bs.disabled = true;
-      const rr = await apiPost("siguientePregunta", { token: state.token, concursoId: c.id });
-      if (!rr.ok) { alert(rr.error); bs.disabled = false; return; }
-      pintar();
-    });
-    const bf = document.getElementById("b-finalizar");
-    if (bf) bf.addEventListener("click", async () => {
-      if (!confirm("¿Finalizar el concurso ahora mismo?")) return;
-      await apiPost("finalizarConcurso", { token: state.token, concursoId: c.id });
-      pintar();
-    });
+    // Solo re-renderiza los botones si cambió el estado del concurso
+    if (r.estado !== anteriorEstado) {
+      anteriorEstado = r.estado;
+      const acc = document.getElementById("cl-acciones");
+      if (!acc) return;
+      if (r.estado === "activo") {
+        acc.innerHTML = `
+          <button class="btn btn--gold btn--block" id="b-siguiente" style="margin-top:18px;">
+            ${r.indicePregunta + 1 >= r.totalPreguntas ? "Finalizar y revelar resultados" : "Siguiente pregunta"}
+          </button>
+          <button class="btn btn--ghost btn--block" id="b-finalizar" style="margin-top:10px;">Finalizar concurso ahora</button>`;
+        document.getElementById("b-siguiente").addEventListener("click", async () => {
+          const btn = document.getElementById("b-siguiente");
+          if (btn) btn.disabled = true;
+          const rr = await apiPost("siguientePregunta", { token: state.token, concursoId: c.id });
+          if (!rr.ok) { alert(rr.error); if (btn) btn.disabled = false; return; }
+          anteriorIdx = null; // forzar re-render de la tarjeta
+          pintar();
+        });
+        document.getElementById("b-finalizar").addEventListener("click", async () => {
+          if (!confirm("¿Finalizar el concurso ahora mismo?")) return;
+          await apiPost("finalizarConcurso", { token: state.token, concursoId: c.id });
+          pintar();
+        });
+      } else {
+        acc.innerHTML = `<div class="okbox" style="margin-top:18px;">Concurso finalizado. Mira la pestaña Resultados.</div>`;
+        detenerPoll();
+      }
+    }
   };
 
   await pintar();
-  state.pollTimer = setInterval(pintar, 2500);
+  state.pollTimer = setInterval(pintar, 3000);
 }
 
 /* --- tab resultados --- */

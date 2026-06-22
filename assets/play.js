@@ -2,37 +2,33 @@
    play.js — vista del concursante
    ============================================================ */
 
-const app = document.getElementById("app");
+const app  = document.getElementById("app");
 const slug = getQueryParam("c");
 
 const state = {
-  jugador: null,        // {concursanteId, nombre}
-  ultimaPreguntaId: null,
-  pollTimer: null
+  jugador:          null,   // {concursanteId, nombre}
+  ultimoEstado:     null,   // snapshot del último render para detectar cambios
+  pollTimer:        null,
+  errorCount:       0       // para backoff en fallos de red
 };
+
+const POLL_NORMAL_MS  = 2500;
+const POLL_ERROR_BASE = 4000;
+const POLL_ERROR_MAX  = 20000;
 
 function escapeHtml(s) {
   return (s ?? "").toString()
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-function keyJugador() { return "qa_player_" + slug; }
+function keyJugador()    { return "qa_player_"  + slug; }
 function keyRespuestas() { return "qa_answers_" + slug; }
 
-function cargarJugador() {
-  const raw = localStorage.getItem(keyJugador());
-  state.jugador = raw ? JSON.parse(raw) : null;
-}
-function guardarJugador(j) {
-  state.jugador = j;
-  localStorage.setItem(keyJugador(), JSON.stringify(j));
-}
-function respuestasGuardadas() {
-  return JSON.parse(localStorage.getItem(keyRespuestas()) || "{}");
-}
+function cargarJugador()  { const r = localStorage.getItem(keyJugador()); state.jugador = r ? JSON.parse(r) : null; }
+function guardarJugador(j){ state.jugador = j; localStorage.setItem(keyJugador(), JSON.stringify(j)); }
+function respuestasGuardadas() { return JSON.parse(localStorage.getItem(keyRespuestas()) || "{}"); }
 function guardarRespuesta(preguntaId, opcion) {
-  const r = respuestasGuardadas();
-  r[preguntaId] = opcion;
+  const r = respuestasGuardadas(); r[preguntaId] = opcion;
   localStorage.setItem(keyRespuestas(), JSON.stringify(r));
 }
 
@@ -40,7 +36,7 @@ function detenerPoll() { if (state.pollTimer) { clearInterval(state.pollTimer); 
 
 function cabeceraConcurso(nombre, logoUrl) {
   return `<div class="concurso-header">
-    ${logoUrl ? `<img class="concurso-header__logo" src="${logoUrl}" alt="" />` : ""}
+    ${logoUrl ? `<img class="concurso-header__logo" src="${escapeHtml(logoUrl)}" alt="" />` : ""}
     <h1>${escapeHtml(nombre)}</h1>
   </div>`;
 }
@@ -55,7 +51,7 @@ function shell(contenido) {
 /* ---------------- arranque ---------------- */
 
 async function iniciar() {
-  if (!slug) { shell(`<div class="errorbox">Falta el enlace del concurso. Pide al anfitrión el enlace correcto.</div>`); return; }
+  if (!slug) { shell(`<div class="errorbox">Falta el enlace del concurso.</div>`); return; }
   cargarJugador();
   if (!state.jugador) return mostrarUnirse();
   empezarPoll();
@@ -66,6 +62,7 @@ async function iniciar() {
 async function mostrarUnirse() {
   const r = await apiGet("estadoPublico", { slug });
   if (!r.ok) { shell(`<div class="errorbox">${escapeHtml(r.error)}</div>`); return; }
+
   shell(`
     ${cabeceraConcurso(r.nombre, r.logoUrl)}
     <p class="muted">Escribe tu nombre para unirte al concurso.</p>
@@ -76,7 +73,7 @@ async function mostrarUnirse() {
       <button class="btn btn--gold btn--block" style="margin-top:16px;" type="submit">Unirme</button>
     </form>`);
 
-  document.getElementById("f-unirse").addEventListener("submit", async (ev) => {
+  document.getElementById("f-unirse").addEventListener("submit", async ev => {
     ev.preventDefault();
     const nombre = document.getElementById("ju-nombre").value.trim();
     const errBox = document.getElementById("ju-error");
@@ -88,21 +85,55 @@ async function mostrarUnirse() {
   });
 }
 
-/* ---------------- bucle de juego ---------------- */
+/* ============================================================
+   BUCLE DE JUEGO — con skip de render si nada cambió
+   ============================================================ */
 
 function empezarPoll() {
   pintarEstado();
-  state.pollTimer = setInterval(pintarEstado, 2000);
+  state.pollTimer = setInterval(pintarEstado, POLL_NORMAL_MS);
+}
+
+function claveEstado(r) {
+  // Cadena mínima que identifica si la pantalla debe cambiar
+  if (!r) return "";
+  const pid = r.pregunta ? r.pregunta.id : "null";
+  const ya  = r.pregunta ? (respuestasGuardadas()[r.pregunta.id] !== undefined ? "1" : "0") : "0";
+  return `${r.estado}|${r.indicePregunta}|${pid}|${ya}`;
 }
 
 async function pintarEstado() {
-  const r = await apiGet("estadoPublico", { slug });
-  if (!r.ok) { shell(`<div class="errorbox">${escapeHtml(r.error)}</div>`); detenerPoll(); return; }
+  let r;
+  try {
+    r = await apiGet("estadoPublico", { slug });
+  } catch (e) {
+    // Error de red: backoff exponencial, no tocar la UI
+    state.errorCount++;
+    detenerPoll();
+    const delay = Math.min(POLL_ERROR_BASE * state.errorCount, POLL_ERROR_MAX);
+    state.pollTimer = setTimeout(pintarEstado, delay);
+    return;
+  }
 
-  if (r.estado === "borrador") return pintarEspera(r);
-  if (r.estado === "finalizado") { detenerPoll(); return pintarFinal(); }
-  return pintarPregunta(r);
+  if (!r.ok) {
+    shell(`<div class="errorbox">${escapeHtml(r.error)}</div>`);
+    detenerPoll();
+    return;
+  }
+
+  state.errorCount = 0;
+
+  // ── Skip si la pantalla no necesita cambiar ──
+  const clave = claveEstado(r);
+  if (clave === state.ultimoEstado) return;
+  state.ultimoEstado = clave;
+
+  if (r.estado === "borrador")    return pintarEspera(r);
+  if (r.estado === "finalizado")  { detenerPoll(); return pintarFinal(); }
+  pintarPregunta(r);
 }
+
+/* ---------------- pantallas individuales ---------------- */
 
 function pintarEspera(r) {
   shell(`
@@ -112,38 +143,45 @@ function pintarEspera(r) {
 }
 
 function pintarPregunta(r) {
-  const p = r.pregunta;
+  const p           = r.pregunta;
   if (!p) { shell(`<p class="pulse">Preparando la siguiente pregunta…</p>`); return; }
 
-  const respuestas = respuestasGuardadas();
+  const respuestas  = respuestasGuardadas();
   const yaRespondida = respuestas[p.id] !== undefined;
 
   shell(`
-    <div class="row small muted"><span>${r.logoUrl ? `<img class="logo-mini-inline" src="${r.logoUrl}" alt="" />` : ""}Pregunta ${r.indicePregunta + 1} / ${r.totalPreguntas}</span><span>${state.jugador.nombre}</span></div>
+    <div class="row small muted">
+      <span>${r.logoUrl ? `<img class="logo-mini-inline" src="${escapeHtml(r.logoUrl)}" alt="" />` : ""}
+            Pregunta ${r.indicePregunta + 1} / ${r.totalPreguntas}</span>
+      <span>${escapeHtml(state.jugador.nombre)}</span>
+    </div>
     <h2 style="margin-top:10px;">${escapeHtml(p.texto)}</h2>
     <div class="opciones" id="opciones">
       ${["A","B","C","D"].map(L => `
-        <button class="opcion ${yaRespondida && respuestas[p.id] === L ? "opcion--elegida" : ""}" data-letra="${L}" ${yaRespondida ? "disabled" : ""}>
-          <span class="opcion__letra">${L}</span><span>${escapeHtml(p["opcion" + L])}</span>
+        <button class="opcion ${yaRespondida && respuestas[p.id] === L ? "opcion--elegida" : ""}"
+                data-letra="${L}" ${yaRespondida ? "disabled" : ""}>
+          <span class="opcion__letra">${L}</span>
+          <span>${escapeHtml(p["opcion" + L])}</span>
         </button>`).join("")}
     </div>
     ${yaRespondida
       ? `<div class="okbox" style="margin-top:16px;">Respuesta enviada. Esperando la siguiente pregunta…</div>`
-      : `<p class="muted small" style="margin-top:14px;">Elige una opción. Solo cuenta tu primera respuesta.</p>`}
-  `);
+      : `<p class="muted small" style="margin-top:14px;">Elige una opción. Solo cuenta tu primera respuesta.</p>`}`);
 
   if (!yaRespondida) {
     document.querySelectorAll("#opciones .opcion").forEach(btn => btn.addEventListener("click", async () => {
+      // Deshabilitar todos antes de esperar la red para evitar doble envío
       document.querySelectorAll("#opciones .opcion").forEach(b => b.disabled = true);
       const opcion = btn.dataset.letra;
-      const rr = await apiPost("enviarRespuesta", { slug, concursanteId: state.jugador.concursanteId, preguntaId: p.id, opcion });
-      if (!rr.ok) {
-        // si el servidor dice que ya estaba respondida o la pregunta cambió, simplemente resincroniza
-        guardarRespuesta(p.id, opcion);
-        pintarEstado();
-        return;
+      guardarRespuesta(p.id, opcion); // guardar localmente ya (optimistic)
+      state.ultimoEstado = null;      // forzar re-render tras confirmar
+
+      const rr = await apiPost("enviarRespuesta",
+        { slug, concursanteId: state.jugador.concursanteId, preguntaId: p.id, opcion });
+      if (!rr.ok && !/ya has respondido/i.test(rr.error)) {
+        // Si falla por algo inesperado, lo indicamos pero mantenemos la respuesta local
+        console.warn("enviarRespuesta:", rr.error);
       }
-      guardarRespuesta(p.id, opcion);
       pintarEstado();
     }));
   }
@@ -151,9 +189,15 @@ function pintarPregunta(r) {
 
 async function pintarFinal() {
   const r = await apiGet("resultadosPublicos", { slug });
-  if (!r.ok || !r.disponible) { shell(`<p class="muted">El concurso ha finalizado. Calculando resultados…</p>`); return; }
+  if (!r.ok || !r.disponible) {
+    shell(`<p class="muted">El concurso ha finalizado. Calculando resultados…</p>`);
+    // Reintentar en 4s por si el admin aún no cerró el concurso
+    state.pollTimer = setTimeout(pintarFinal, 4000);
+    return;
+  }
+
   const miNombre = state.jugador?.nombre;
-  let yaContado = false;
+  let yaContado  = false;
   shell(`
     ${cabeceraConcurso(r.nombre, r.logoUrl)}
     <h2>Resultados finales</h2>
@@ -162,8 +206,9 @@ async function pintarFinal() {
       <tbody>
         ${r.ranking.map((f, i) => {
           const esYo = !yaContado && f.nombre === miNombre;
-          if (f.nombre === miNombre) yaContado = true;
-          return `<tr class="${esYo ? "yo" : ""}"><td>${i + 1}</td><td>${escapeHtml(f.nombre)}</td><td>${f.puntos}</td></tr>`;
+          if (esYo) yaContado = true;
+          return `<tr class="${esYo ? "yo" : ""}">
+            <td>${i + 1}</td><td>${escapeHtml(f.nombre)}</td><td>${f.puntos}</td></tr>`;
         }).join("") || `<tr><td colspan="3" class="muted">Nadie ha participado.</td></tr>`}
       </tbody>
     </table>`);
