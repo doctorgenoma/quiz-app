@@ -154,9 +154,9 @@ async function renderDashboard() {
   const cont = document.getElementById("lista-concursos");
   if (!concursos.length) { cont.innerHTML = `<p class="muted">Todavía no has creado ningún concurso.</p>`; return; }
   cont.innerHTML = concursos.map(c => `
-    <div class="card card--clickable" data-id="${c.id}">
+    <div class="card" style="cursor:default;" data-id="${c.id}">
       <div class="row">
-        <div class="row" style="justify-content:flex-start;gap:12px;">
+        <div class="row card--clickable" style="justify-content:flex-start;gap:12px;flex:1;" data-open="${c.id}">
           ${c.logoUrl
             ? `<img class="concurso-mini-logo" src="${c.logoUrl}" alt="" />`
             : `<div class="concurso-mini-logo concurso-mini-logo--vacio">${escapeHtml((c.nombre[0] || "?").toUpperCase())}</div>`}
@@ -165,12 +165,45 @@ async function renderDashboard() {
             <span class="muted small">${c.totalPreguntas} pregunta(s) · ${c.totalConcursantes} concursante(s)</span>
           </div>
         </div>
-        ${badgeEstado(c.estado)}
+        <div class="row" style="gap:6px;flex-shrink:0;">
+          ${badgeEstado(c.estado)}
+          <button class="btn btn--ghost btn--sm" data-dup="${c.id}" title="Duplicar como plantilla">⧉ Duplicar</button>
+          ${c.estado === "finalizado"
+            ? `<button class="btn btn--ghost btn--sm btn--del" data-del="${c.id}" title="Eliminar concurso">✕</button>`
+            : ""}
+        </div>
       </div>
     </div>`).join("");
-  cont.querySelectorAll(".card").forEach(el => el.addEventListener("click", () => {
-    state.vista = "concurso"; state.concursoId = el.dataset.id; state.pestana = "preguntas";
+
+  // Abrir ficha al pulsar la zona de texto/logo (no los botones)
+  cont.querySelectorAll("[data-open]").forEach(el => el.addEventListener("click", () => {
+    state.vista = "concurso"; state.concursoId = el.dataset.open; state.pestana = "preguntas";
     render();
+  }));
+
+  // Duplicar
+  cont.querySelectorAll("[data-dup]").forEach(btn => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const nombre = prompt("Nombre del nuevo concurso (déjalo vacío para usar el original con «— copia»):");
+    if (nombre === null) return; // cancelado
+    btn.disabled = true;
+    btn.textContent = "Copiando…";
+    const r = await apiPost("duplicarConcurso", { token: state.token, concursoId: btn.dataset.dup, nombre });
+    if (!r.ok) { alert(r.error); btn.disabled = false; btn.textContent = "⧉ Duplicar"; return; }
+    // Abrir el nuevo concurso directamente para editarlo
+    state.vista = "concurso"; state.concursoId = r.concurso.id; state.pestana = "preguntas";
+    render();
+  }));
+
+  // Eliminar (solo finalizados)
+  cont.querySelectorAll("[data-del]").forEach(btn => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const nombre = state.concursos.find(c => c.id === btn.dataset.del)?.nombre || "este concurso";
+    if (!confirm(`¿Eliminar «${nombre}» y todos sus datos? Esta acción no se puede deshacer.`)) return;
+    btn.disabled = true;
+    const r = await apiPost("eliminarConcurso", { token: state.token, concursoId: btn.dataset.del });
+    if (!r.ok) { alert(r.error); btn.disabled = false; return; }
+    renderDashboard();
   }));
 }
 
@@ -184,8 +217,16 @@ async function renderConcurso() {
   if (!c) { state.vista = "dashboard"; return render(); }
 
   app.innerHTML = `
-    <button class="btn btn--ghost btn--sm" id="b-volver">&larr; Tus concursos</button>
-    <div class="row" style="margin-top:14px;">
+    <div class="row" style="margin-bottom:6px;">
+      <button class="btn btn--ghost btn--sm" id="b-volver">&larr; Tus concursos</button>
+      <div class="row" style="gap:6px;">
+        <button class="btn btn--ghost btn--sm" id="b-dup-ficha">⧉ Duplicar</button>
+        ${c.estado === "finalizado"
+          ? `<button class="btn btn--danger btn--sm" id="b-del-ficha">✕ Eliminar</button>`
+          : ""}
+      </div>
+    </div>
+    <div class="row" style="margin-top:8px;">
       <div class="concurso-header">
         ${c.logoUrl ? `<img class="concurso-header__logo" src="${c.logoUrl}" alt="" />` : ""}
         <h1 style="font-size:30px;">${escapeHtml(c.nombre)}</h1>
@@ -219,6 +260,30 @@ async function renderConcurso() {
     <div id="tab-content" style="margin-top:18px;"></div>`;
 
   document.getElementById("b-volver").addEventListener("click", () => { state.vista = "dashboard"; render(); });
+
+  // Duplicar desde la ficha
+  document.getElementById("b-dup-ficha").addEventListener("click", async () => {
+    const nombre = prompt("Nombre del nuevo concurso (déjalo vacío para usar el original con «— copia»):");
+    if (nombre === null) return;
+    const btn = document.getElementById("b-dup-ficha");
+    btn.disabled = true; btn.textContent = "Copiando…";
+    const r = await apiPost("duplicarConcurso", { token: state.token, concursoId: c.id, nombre });
+    if (!r.ok) { alert(r.error); btn.disabled = false; btn.textContent = "⧉ Duplicar"; return; }
+    state.vista = "concurso"; state.concursoId = r.concurso.id; state.pestana = "preguntas";
+    render();
+  });
+
+  // Eliminar desde la ficha (solo aparece si finalizado)
+  const bdf = document.getElementById("b-del-ficha");
+  if (bdf) bdf.addEventListener("click", async () => {
+    if (!confirm(`¿Eliminar «${c.nombre}» y todos sus datos? Esta acción no se puede deshacer.`)) return;
+    bdf.disabled = true; bdf.textContent = "Eliminando…";
+    const r = await apiPost("eliminarConcurso", { token: state.token, concursoId: c.id });
+    if (!r.ok) { alert(r.error); bdf.disabled = false; bdf.textContent = "✕ Eliminar"; return; }
+    state.vista = "dashboard";
+    render();
+  });
+
   document.getElementById("b-copiar").addEventListener("click", () => {
     navigator.clipboard?.writeText(linkConcursante(c.slug));
   });
