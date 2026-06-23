@@ -34,6 +34,56 @@ function guardarRespuesta(preguntaId, opcion) {
 
 function detenerPoll() { if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; } }
 
+/* ============================================================
+   WALLPAPER — gestiona #bg-wall y #bg-vignette en el DOM
+   ============================================================ */
+
+let _wallUrl = null; // url activa para evitar reasignar si no cambió
+
+function setWallpaper(url) {
+  if (!url) { clearWallpaper(); return; }
+
+  // Crear los divs la primera vez
+  let wall = document.getElementById("bg-wall");
+  if (!wall) {
+    wall = document.createElement("div");
+    wall.id = "bg-wall";
+    document.body.prepend(wall);
+  }
+  let vig = document.getElementById("bg-vignette");
+  if (!vig) {
+    vig = document.createElement("div");
+    vig.id = "bg-vignette";
+    document.body.prepend(vig);
+  }
+
+  // Solo actualiza la imagen si cambió (evita reflow innecesario)
+  if (_wallUrl !== url) {
+    _wallUrl = url;
+    // Precargar antes de mostrar para evitar parpadeo
+    const img = new Image();
+    img.onload = () => {
+      wall.style.backgroundImage = `url("${url}")`;
+      requestAnimationFrame(() => {
+        wall.classList.add("visible");
+        vig.classList.add("visible");
+      });
+    };
+    img.src = url;
+  }
+
+  document.body.classList.add("has-wall");
+}
+
+function clearWallpaper() {
+  _wallUrl = null;
+  document.body.classList.remove("has-wall");
+  const wall = document.getElementById("bg-wall");
+  const vig  = document.getElementById("bg-vignette");
+  if (wall) { wall.classList.remove("visible"); }
+  if (vig)  { vig.classList.remove("visible"); }
+}
+
 function cabeceraConcurso(nombre, logoUrl) {
   return `<div class="concurso-header">
     ${logoUrl ? `<img class="concurso-header__logo" src="${escapeHtml(logoUrl)}" alt="" />` : ""}
@@ -63,6 +113,7 @@ async function mostrarUnirse() {
   const r = await apiGet("estadoPublico", { slug });
   if (!r.ok) { shell(`<div class="errorbox">${escapeHtml(r.error)}</div>`); return; }
 
+  setWallpaper(r.logoUrl);
   shell(`
     ${cabeceraConcurso(r.nombre, r.logoUrl)}
     <p class="muted">Escribe tu nombre para unirte al concurso.</p>
@@ -116,6 +167,7 @@ async function pintarEstado() {
   }
 
   if (!r.ok) {
+    clearWallpaper();
     shell(`<div class="errorbox">${escapeHtml(r.error)}</div>`);
     detenerPoll();
     return;
@@ -136,6 +188,7 @@ async function pintarEstado() {
 /* ---------------- pantallas individuales ---------------- */
 
 function pintarEspera(r) {
+  setWallpaper(r.logoUrl);
   shell(`
     ${cabeceraConcurso(r.nombre, r.logoUrl)}
     <p>Hola, <strong>${escapeHtml(state.jugador.nombre)}</strong> 👋</p>
@@ -145,6 +198,8 @@ function pintarEspera(r) {
 function pintarPregunta(r) {
   const p           = r.pregunta;
   if (!p) { shell(`<p class="pulse">Preparando la siguiente pregunta…</p>`); return; }
+
+  setWallpaper(r.logoUrl);
 
   const respuestas  = respuestasGuardadas();
   const yaRespondida = respuestas[p.id] !== undefined;
@@ -198,6 +253,7 @@ async function pintarFinal() {
 
   const miNombre = state.jugador?.nombre;
   let yaContado  = false;
+  setWallpaper(r.logoUrl);
   shell(`
     ${cabeceraConcurso(r.nombre, r.logoUrl)}
     <h2>Resultados finales</h2>
