@@ -201,8 +201,12 @@ function pintarPregunta(r) {
 
   setWallpaper(r.logoUrl);
 
-  const respuestas  = respuestasGuardadas();
+  const respuestas   = respuestasGuardadas();
   const yaRespondida = respuestas[p.id] !== undefined;
+
+  // Calcular tiempo restante para mostrar la barra (solo lectura local, sin llamadas extra)
+  const timerSegs = Number(r.timerSegundos) || 0;
+  const mostrarTimer = timerSegs > 0 && r.preguntaIniciadaEn && !yaRespondida;
 
   shell(`
     <div class="row small muted">
@@ -210,7 +214,14 @@ function pintarPregunta(r) {
             Pregunta ${r.indicePregunta + 1} / ${r.totalPreguntas}</span>
       <span>${escapeHtml(state.jugador.nombre)}</span>
     </div>
-    <h2 style="margin-top:10px;">${escapeHtml(p.texto)}</h2>
+    ${mostrarTimer ? `
+    <div class="timer-track" style="margin:10px 0 4px;">
+      <div class="timer-bar" id="play-barra"></div>
+    </div>
+    <div class="row" style="margin-bottom:6px;">
+      <span></span><span class="muted small" id="play-segs"></span>
+    </div>` : ""}
+    <h2 style="margin-top:6px;">${escapeHtml(p.texto)}</h2>
     <div class="opciones" id="opciones">
       ${["A","B","C","D"].map(L => `
         <button class="opcion ${yaRespondida && respuestas[p.id] === L ? "opcion--elegida" : ""}"
@@ -223,18 +234,37 @@ function pintarPregunta(r) {
       ? `<div class="okbox" style="margin-top:16px;">Respuesta enviada. Esperando la siguiente pregunta…</div>`
       : `<p class="muted small" style="margin-top:14px;">Elige una opción. Solo cuenta tu primera respuesta.</p>`}`);
 
+  // Cuenta regresiva local (actualización cada 100 ms, sin polling al servidor)
+  if (mostrarTimer) {
+    const fin = new Date(r.preguntaIniciadaEn).getTime() + timerSegs * 1000;
+    const barra = document.getElementById("play-barra");
+    const segsEl = document.getElementById("play-segs");
+    const tick = setInterval(() => {
+      const restante = Math.max(0, fin - Date.now());
+      const pct = (restante / (timerSegs * 1000)) * 100;
+      const segs = Math.ceil(restante / 1000);
+      if (barra) {
+        barra.style.width = pct + "%";
+        barra.className   = "timer-bar" + (pct < 25 ? " timer-bar--urgent" : pct < 55 ? " timer-bar--warning" : "");
+      }
+      if (segsEl) segsEl.textContent = segs + " s";
+      if (restante <= 0) clearInterval(tick);
+    }, 100);
+    // Limpiar si el DOM cambia antes de que acabe
+    const observer = new MutationObserver(() => { clearInterval(tick); observer.disconnect(); });
+    observer.observe(document.getElementById("app"), { childList: true });
+  }
+
   if (!yaRespondida) {
     document.querySelectorAll("#opciones .opcion").forEach(btn => btn.addEventListener("click", async () => {
-      // Deshabilitar todos antes de esperar la red para evitar doble envío
       document.querySelectorAll("#opciones .opcion").forEach(b => b.disabled = true);
       const opcion = btn.dataset.letra;
-      guardarRespuesta(p.id, opcion); // guardar localmente ya (optimistic)
-      state.ultimoEstado = null;      // forzar re-render tras confirmar
+      guardarRespuesta(p.id, opcion);
+      state.ultimoEstado = null;
 
       const rr = await apiPost("enviarRespuesta",
         { slug, concursanteId: state.jugador.concursanteId, preguntaId: p.id, opcion });
       if (!rr.ok && !/ya has respondido/i.test(rr.error)) {
-        // Si falla por algo inesperado, lo indicamos pero mantenemos la respuesta local
         console.warn("enviarRespuesta:", rr.error);
       }
       pintarEstado();

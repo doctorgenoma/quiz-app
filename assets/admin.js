@@ -350,7 +350,26 @@ async function renderTabPreguntas(c) {
         <button class="btn btn--gold" style="margin-top:16px;" type="submit">Guardar pregunta</button>
       </form>
     </div>
-    ${preguntas.length ? `<button class="btn btn--gold btn--block" id="b-iniciar" style="margin-top:20px;">Iniciar concurso</button>` : ""}
+    ${preguntas.length ? `
+    <div class="card" style="margin-top:14px;">
+      <div class="row">
+        <div>
+          <h3 style="margin-bottom:2px;">Temporizador por pregunta</h3>
+          <span class="muted small">El anfitrión podrá avanzar manualmente en cualquier momento.</span>
+        </div>
+        <select id="sel-timer" style="width:auto;min-width:140px;">
+          <option value="0"  ${(c.timerSegundos||0)==0  ?"selected":""}>Manual (sin límite)</option>
+          <option value="15" ${(c.timerSegundos||0)==15 ?"selected":""}>15 segundos</option>
+          <option value="20" ${(c.timerSegundos||0)==20 ?"selected":""}>20 segundos</option>
+          <option value="30" ${(c.timerSegundos||0)==30 ?"selected":""}>30 segundos</option>
+          <option value="45" ${(c.timerSegundos||0)==45 ?"selected":""}>45 segundos</option>
+          <option value="60" ${(c.timerSegundos||0)==60 ?"selected":""}>1 minuto</option>
+          <option value="90" ${(c.timerSegundos||0)==90 ?"selected":""}>1 min 30 s</option>
+          <option value="120"${(c.timerSegundos||0)==120?"selected":""}>2 minutos</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn btn--gold btn--block" id="b-iniciar" style="margin-top:20px;">Iniciar concurso</button>` : ""}
     `}`;
 
   cont.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
@@ -359,6 +378,16 @@ async function renderTabPreguntas(c) {
     if (!r.ok) return alert(r.error);
     renderTabPreguntas(c);
   }));
+
+  const selTimer = document.getElementById("sel-timer");
+  if (selTimer) selTimer.addEventListener("change", async () => {
+    const r = await apiPost("configurarTimer", {
+      token: state.token, concursoId: c.id, timerSegundos: selTimer.value
+    });
+    if (!r.ok) { alert(r.error); return; }
+    // Actualizar el objeto local para que renderTabControl lo vea
+    c.timerSegundos = r.timerSegundos;
+  });
 
   const fp = document.getElementById("f-pregunta");
   if (fp) fp.addEventListener("submit", async (ev) => {
@@ -378,7 +407,11 @@ async function renderTabPreguntas(c) {
 
   const bi = document.getElementById("b-iniciar");
   if (bi) bi.addEventListener("click", async () => {
-    if (!confirm("Al iniciar, los concursantes podrán empezar a responder y ya no podrás editar las preguntas. ¿Continuar?")) return;
+    const timer = c.timerSegundos || 0;
+    const msg = timer > 0
+      ? `Se iniciará el concurso con ${timer} segundos por pregunta. ¿Continuar?`
+      : "Al iniciar, los concursantes podrán empezar a responder y ya no podrás editar las preguntas. ¿Continuar?";
+    if (!confirm(msg)) return;
     const r = await apiPost("iniciarConcurso", { token: state.token, concursoId: c.id });
     if (!r.ok) return alert(r.error);
     state.pestana = "control";
@@ -396,40 +429,88 @@ async function renderTabControl(c) {
     return;
   }
 
-  // Estructura fija del DOM — los contadores y la pregunta se actualizan
-  // quirúrgicamente sin re-renderizar la tarjeta entera cada sondeo.
   cont.innerHTML = `
     <div class="flap-row" style="margin-bottom:18px;">
       <div class="flap"><div class="flap__value" id="fl-pregunta">-</div><div class="flap__label">Pregunta</div></div>
       <div class="flap"><div class="flap__value" id="fl-concursantes">-</div><div class="flap__label">Concursantes</div></div>
       <div class="flap"><div class="flap__value" id="fl-respuestas">-</div><div class="flap__label">Han respondido</div></div>
+      <div class="flap" id="fl-timer-wrap" style="display:none;">
+        <div class="flap__value" id="fl-timer">-</div>
+        <div class="flap__label">Segundos</div>
+      </div>
+    </div>
+    <div id="cl-barra-wrap" style="display:none;margin-bottom:18px;">
+      <div class="timer-track"><div class="timer-bar" id="cl-barra"></div></div>
     </div>
     <div id="cl-pregunta-card"></div>
     <div id="cl-acciones"></div>`;
 
-  let anteriorIdx = null;
+  let anteriorIdx    = null;
   let anteriorEstado = null;
+  let cuentaTimer    = null; // setInterval local para la cuenta regresiva
+  let avanzando      = false; // evitar doble avance simultáneo
+
+  function detenerCuenta() {
+    if (cuentaTimer) { clearInterval(cuentaTimer); cuentaTimer = null; }
+  }
 
   function actualizarFlap(id, val) {
     const el = document.getElementById(id);
     if (!el || el.textContent === String(val)) return;
     el.textContent = val;
     el.parentElement.classList.remove("flap--update");
-    void el.parentElement.offsetWidth; // reflow para reiniciar animación
+    void el.parentElement.offsetWidth;
     el.parentElement.classList.add("flap--update");
   }
 
+  async function avanzarPregunta() {
+    if (avanzando) return;
+    avanzando = true;
+    detenerCuenta();
+    const btn = document.getElementById("b-siguiente");
+    if (btn) btn.disabled = true;
+    const rr = await apiPost("siguientePregunta", { token: state.token, concursoId: c.id });
+    avanzando = false;
+    if (!rr.ok) { alert(rr.error); if (btn) btn.disabled = false; return; }
+    anteriorIdx = null;
+    pintar();
+  }
+
+  function arrancarCuenta(timerSegundos, iniciadaEn) {
+    detenerCuenta();
+    const timerWrap = document.getElementById("fl-timer-wrap");
+    const barraWrap = document.getElementById("cl-barra-wrap");
+    const barra     = document.getElementById("cl-barra");
+    if (!timerWrap) return;
+
+    timerWrap.style.display = "";
+    barraWrap.style.display = "";
+
+    const fin = new Date(iniciadaEn).getTime() + timerSegundos * 1000;
+
+    cuentaTimer = setInterval(() => {
+      const restante = Math.max(0, fin - Date.now());
+      const segs     = Math.ceil(restante / 1000);
+      const pct      = (restante / (timerSegundos * 1000)) * 100;
+
+      actualizarFlap("fl-timer", segs);
+      if (barra) {
+        barra.style.width = pct + "%";
+        barra.className   = "timer-bar" + (pct < 25 ? " timer-bar--urgent" : pct < 55 ? " timer-bar--warning" : "");
+      }
+      if (restante <= 0) avanzarPregunta();
+    }, 200);
+  }
+
   const pintar = async () => {
-    // El admin usa estadoAdmin (POST) que incluye totalConcursantes y respuestasActual
     const r = await apiPost("estadoAdmin", { token: state.token, slug: c.slug });
     if (!r.ok) return;
 
     const numPregunta = r.estado === "finalizado" ? r.totalPreguntas : r.indicePregunta + 1;
-    actualizarFlap("fl-pregunta",      numPregunta + "/" + r.totalPreguntas);
-    actualizarFlap("fl-concursantes",  r.totalConcursantes);
-    actualizarFlap("fl-respuestas",    r.respuestasActual);
+    actualizarFlap("fl-pregunta",     numPregunta + "/" + r.totalPreguntas);
+    actualizarFlap("fl-concursantes", r.totalConcursantes);
+    actualizarFlap("fl-respuestas",   r.respuestasActual);
 
-    // Solo re-renderiza la tarjeta de pregunta si cambió la pregunta
     if (r.indicePregunta !== anteriorIdx) {
       anteriorIdx = r.indicePregunta;
       const card = document.getElementById("cl-pregunta-card");
@@ -440,33 +521,40 @@ async function renderTabControl(c) {
             ${["A","B","C","D"].map(L => `${L}) ${escapeHtml(r.pregunta["opcion"+L])}`).join("<br/>")}
           </div>
         </div>` : "";
+
+      // Arrancar o detener la cuenta regresiva según configuración
+      if (r.timerSegundos > 0 && r.preguntaIniciadaEn && r.estado === "activo") {
+        arrancarCuenta(r.timerSegundos, r.preguntaIniciadaEn);
+      } else {
+        detenerCuenta();
+        const timerWrap = document.getElementById("fl-timer-wrap");
+        const barraWrap = document.getElementById("cl-barra-wrap");
+        if (timerWrap) timerWrap.style.display = "none";
+        if (barraWrap) barraWrap.style.display = "none";
+      }
     }
 
-    // Solo re-renderiza los botones si cambió el estado del concurso
     if (r.estado !== anteriorEstado) {
       anteriorEstado = r.estado;
       const acc = document.getElementById("cl-acciones");
       if (!acc) return;
       if (r.estado === "activo") {
+        const esUltima = r.indicePregunta + 1 >= r.totalPreguntas;
+        const etiqAuto = r.timerSegundos > 0 ? " (automático)" : "";
         acc.innerHTML = `
           <button class="btn btn--gold btn--block" id="b-siguiente" style="margin-top:18px;">
-            ${r.indicePregunta + 1 >= r.totalPreguntas ? "Finalizar y revelar resultados" : "Siguiente pregunta"}
+            ${esUltima ? "Finalizar y revelar resultados" : "Siguiente pregunta" + etiqAuto}
           </button>
           <button class="btn btn--ghost btn--block" id="b-finalizar" style="margin-top:10px;">Finalizar concurso ahora</button>`;
-        document.getElementById("b-siguiente").addEventListener("click", async () => {
-          const btn = document.getElementById("b-siguiente");
-          if (btn) btn.disabled = true;
-          const rr = await apiPost("siguientePregunta", { token: state.token, concursoId: c.id });
-          if (!rr.ok) { alert(rr.error); if (btn) btn.disabled = false; return; }
-          anteriorIdx = null; // forzar re-render de la tarjeta
-          pintar();
-        });
+        document.getElementById("b-siguiente").addEventListener("click", avanzarPregunta);
         document.getElementById("b-finalizar").addEventListener("click", async () => {
           if (!confirm("¿Finalizar el concurso ahora mismo?")) return;
+          detenerCuenta();
           await apiPost("finalizarConcurso", { token: state.token, concursoId: c.id });
           pintar();
         });
       } else {
+        detenerCuenta();
         acc.innerHTML = `<div class="okbox" style="margin-top:18px;">Concurso finalizado. Mira la pestaña Resultados.</div>`;
         detenerPoll();
       }
