@@ -151,11 +151,12 @@ function empezarPoll() {
 }
 
 function claveEstado(r) {
-  // Cadena mínima que identifica si la pantalla debe cambiar
   if (!r) return "";
   const pid = r.pregunta ? r.pregunta.id : "null";
   const ya  = r.pregunta ? (respuestasGuardadas()[r.pregunta.id] !== undefined ? "1" : "0") : "0";
-  return `${r.estado}|${r.indicePregunta}|${pid}|${ya}`;
+  // Incluir preguntaIniciadaEn para que el render se fuerce cuando cambia la pregunta
+  const ts  = r.preguntaIniciadaEn ? r.preguntaIniciadaEn.slice(0, 19) : "";
+  return `${r.estado}|${r.indicePregunta}|${pid}|${ya}|${ts}`;
 }
 
 async function pintarEstado() {
@@ -201,32 +202,30 @@ function pintarEspera(r) {
 }
 
 function pintarPregunta(r) {
-  const p           = r.pregunta;
+  const p = r.pregunta;
   if (!p) { shell(`<p class="pulse">Preparando la siguiente pregunta…</p>`); return; }
 
   setWallpaper(r.logoUrl);
 
   const respuestas   = respuestasGuardadas();
   const yaRespondida = respuestas[p.id] !== undefined;
-
-  // Calcular tiempo restante para mostrar la barra (solo lectura local, sin llamadas extra)
-  const timerSegs = Number(r.timerSegundos) || 0;
-  const mostrarTimer = timerSegs > 0 && r.preguntaIniciadaEn && !yaRespondida;
+  const timerSegs    = Number(r.timerSegundos) || 0;
+  const hayTimer     = timerSegs > 0 && !!r.preguntaIniciadaEn;
 
   shell(`
-    <div class="row small muted">
+    <div class="row small muted" style="margin-bottom:8px;">
       <span>${r.logoUrl ? `<img class="logo-mini-inline" src="${escapeHtml(r.logoUrl)}" alt="" />` : ""}
             Pregunta ${r.indicePregunta + 1} / ${r.totalPreguntas}</span>
       <span>${escapeHtml(state.jugador.nombre)}</span>
     </div>
-    ${mostrarTimer ? `
-    <div class="timer-track" style="margin:10px 0 4px;">
+
+    ${hayTimer ? `
+    <div class="timer-track" style="margin-bottom:4px;">
       <div class="timer-bar" id="play-barra"></div>
-    </div>
-    <div class="row" style="margin-bottom:6px;">
-      <span></span><span class="muted small" id="play-segs"></span>
     </div>` : ""}
-    <h2 style="margin-top:6px;">${escapeHtml(p.texto)}</h2>
+
+    <h2 style="margin-top:10px;">${escapeHtml(p.texto)}</h2>
+
     <div class="opciones" id="opciones">
       ${["A","B","C","D"].map(L => `
         <button class="opcion ${yaRespondida && respuestas[p.id] === L ? "opcion--elegida" : ""}"
@@ -235,29 +234,46 @@ function pintarPregunta(r) {
           <span>${escapeHtml(p["opcion" + L])}</span>
         </button>`).join("")}
     </div>
-    ${yaRespondida
-      ? `<div class="okbox" style="margin-top:16px;">Respuesta enviada. Esperando la siguiente pregunta…</div>`
-      : `<p class="muted small" style="margin-top:14px;">Elige una opción. Solo cuenta tu primera respuesta.</p>`}`);
 
-  // Cuenta regresiva local en MM:SS (sin llamadas extra al servidor)
-  if (mostrarTimer) {
+    ${yaRespondida ? `
+      <div class="okbox" style="margin-top:16px;">
+        ✓ Respuesta enviada
+        ${hayTimer ? `<div class="countdown-box" style="margin-top:12px;">
+          <div class="countdown-label">Próxima pregunta en</div>
+          <div class="countdown-display" id="play-mm-ss">--:--</div>
+        </div>` : "<br><span class='muted small'>Esperando la siguiente pregunta…</span>"}
+      </div>` :
+      `<p class="muted small" style="margin-top:14px;">
+        Elige una opción. Solo cuenta tu primera respuesta.
+        ${hayTimer ? `<span id="play-mm-ss" style="float:right;font-family:var(--f-mono);color:var(--gold);">--:--</span>` : ""}
+      </p>`}
+  `);
+
+  // ── Cuenta regresiva local ──────────────────────────────────────
+  // Corre 100% en cliente usando el timestamp del servidor.
+  // No genera ninguna llamada extra a la API.
+  if (hayTimer) {
     const fin = new Date(r.preguntaIniciadaEn).getTime() + timerSegs * 1000;
     const barra  = document.getElementById("play-barra");
-    const segsEl = document.getElementById("play-segs");
+    const mmssEl = document.getElementById("play-mm-ss");
+
     const tick = setInterval(() => {
       const restante  = Math.max(0, fin - Date.now());
       const totalSegs = Math.ceil(restante / 1000);
       const mm  = String(Math.floor(totalSegs / 60)).padStart(2, "0");
       const ss  = String(totalSegs % 60).padStart(2, "0");
       const pct = (restante / (timerSegs * 1000)) * 100;
+
+      if (mmssEl) mmssEl.textContent = mm + ":" + ss;
       if (barra) {
         barra.style.width = pct + "%";
         barra.className   = "timer-bar" +
           (pct < 10 ? " timer-bar--urgent" : pct < 30 ? " timer-bar--warning" : "");
       }
-      if (segsEl) segsEl.textContent = mm + ":" + ss;
       if (restante <= 0) clearInterval(tick);
     }, 500);
+
+    // Limpiar el intervalo si el DOM cambia (nueva pregunta o pantalla)
     const observer = new MutationObserver(() => { clearInterval(tick); observer.disconnect(); });
     observer.observe(document.getElementById("app"), { childList: true });
   }

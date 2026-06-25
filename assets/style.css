@@ -393,6 +393,31 @@ footer.foot {
   .timer-bar--urgent { animation: none; }
 }
 
+/* Bloque de cuenta atrás prominente (tras responder) */
+.countdown-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 0 4px;
+}
+.countdown-label {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: rgba(207,242,229,.7);
+}
+.countdown-display {
+  font-family: var(--f-mono);
+  font-weight: 700;
+  font-size: 42px;
+  line-height: 1;
+  color: #fff;
+  letter-spacing: .04em;
+  text-shadow: 0 0 20px rgba(63,182,139,.5);
+}
+
 /* ============================================================
    WALLPAPER DE CONCURSO (solo play.html)
    El logo se extiende a toda la pantalla, muy desenfocado y
