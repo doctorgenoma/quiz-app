@@ -220,11 +220,14 @@ function pintarPregunta(r) {
     </div>
 
     ${hayTimer ? `
-    <div class="timer-track" style="margin-bottom:4px;">
-      <div class="timer-bar" id="play-barra"></div>
+    <div style="margin-bottom:6px;">
+      <div class="timer-track"><div class="timer-bar" id="play-barra"></div></div>
+      <div style="text-align:right;margin-top:3px;">
+        <span class="muted small" id="play-mmss" style="font-family:var(--f-mono);">--:--</span>
+      </div>
     </div>` : ""}
 
-    <h2 style="margin-top:10px;">${escapeHtml(p.texto)}</h2>
+    <h2 style="margin-top:${hayTimer ? "4px" : "10px"};">${escapeHtml(p.texto)}</h2>
 
     <div class="opciones" id="opciones">
       ${["A","B","C","D"].map(L => `
@@ -238,42 +241,39 @@ function pintarPregunta(r) {
     ${yaRespondida ? `
       <div class="okbox" style="margin-top:16px;">
         ✓ Respuesta enviada
-        ${hayTimer ? `<div class="countdown-box" style="margin-top:12px;">
+        ${hayTimer ? `
+        <div class="countdown-box">
           <div class="countdown-label">Próxima pregunta en</div>
-          <div class="countdown-display" id="play-mm-ss">--:--</div>
-        </div>` : "<br><span class='muted small'>Esperando la siguiente pregunta…</span>"}
+          <div class="countdown-display" id="play-mmss-grande">--:--</div>
+        </div>` : `<br><span class="muted small">Esperando la siguiente pregunta…</span>`}
       </div>` :
-      `<p class="muted small" style="margin-top:14px;">
-        Elige una opción. Solo cuenta tu primera respuesta.
-        ${hayTimer ? `<span id="play-mm-ss" style="float:right;font-family:var(--f-mono);color:var(--gold);">--:--</span>` : ""}
-      </p>`}
+      `<p class="muted small" style="margin-top:14px;">Elige una opción. Solo cuenta tu primera respuesta.</p>`}
   `);
 
   // ── Cuenta regresiva local ──────────────────────────────────────
-  // Corre 100% en cliente usando el timestamp del servidor.
-  // No genera ninguna llamada extra a la API.
   if (hayTimer) {
     const fin = new Date(r.preguntaIniciadaEn).getTime() + timerSegs * 1000;
-    const barra  = document.getElementById("play-barra");
-    const mmssEl = document.getElementById("play-mm-ss");
 
     const tick = setInterval(() => {
       const restante  = Math.max(0, fin - Date.now());
       const totalSegs = Math.ceil(restante / 1000);
       const mm  = String(Math.floor(totalSegs / 60)).padStart(2, "0");
       const ss  = String(totalSegs % 60).padStart(2, "0");
+      const txt = mm + ":" + ss;
       const pct = (restante / (timerSegs * 1000)) * 100;
+      const cls = "timer-bar" + (pct < 10 ? " timer-bar--urgent" : pct < 30 ? " timer-bar--warning" : "");
 
-      if (mmssEl) mmssEl.textContent = mm + ":" + ss;
-      if (barra) {
-        barra.style.width = pct + "%";
-        barra.className   = "timer-bar" +
-          (pct < 10 ? " timer-bar--urgent" : pct < 30 ? " timer-bar--warning" : "");
-      }
+      const barra      = document.getElementById("play-barra");
+      const mmssSmall  = document.getElementById("play-mmss");
+      const mmssGrande = document.getElementById("play-mmss-grande");
+
+      if (barra)      { barra.style.width = pct + "%"; barra.className = cls; }
+      if (mmssSmall)  mmssSmall.textContent  = txt;
+      if (mmssGrande) mmssGrande.textContent = txt;
+
       if (restante <= 0) clearInterval(tick);
     }, 500);
 
-    // Limpiar el intervalo si el DOM cambia (nueva pregunta o pantalla)
     const observer = new MutationObserver(() => { clearInterval(tick); observer.disconnect(); });
     observer.observe(document.getElementById("app"), { childList: true });
   }
