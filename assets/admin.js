@@ -357,15 +357,13 @@ async function renderTabPreguntas(c) {
           <h3 style="margin-bottom:2px;">Temporizador por pregunta</h3>
           <span class="muted small">El anfitrión podrá avanzar manualmente en cualquier momento.</span>
         </div>
-        <select id="sel-timer" style="width:auto;min-width:140px;">
-          <option value="0"  ${(c.timerSegundos||0)==0  ?"selected":""}>Manual (sin límite)</option>
-          <option value="15" ${(c.timerSegundos||0)==15 ?"selected":""}>15 segundos</option>
-          <option value="20" ${(c.timerSegundos||0)==20 ?"selected":""}>20 segundos</option>
-          <option value="30" ${(c.timerSegundos||0)==30 ?"selected":""}>30 segundos</option>
-          <option value="45" ${(c.timerSegundos||0)==45 ?"selected":""}>45 segundos</option>
-          <option value="60" ${(c.timerSegundos||0)==60 ?"selected":""}>1 minuto</option>
-          <option value="90" ${(c.timerSegundos||0)==90 ?"selected":""}>1 min 30 s</option>
-          <option value="120"${(c.timerSegundos||0)==120?"selected":""}>2 minutos</option>
+        <select id="sel-timer" style="width:auto;min-width:160px;">
+          <option value="0"    ${(c.timerSegundos||0)==0    ?"selected":""}>Manual (sin límite)</option>
+          <option value="300"  ${(c.timerSegundos||0)==300  ?"selected":""}>5 minutos</option>
+          <option value="600"  ${(c.timerSegundos||0)==600  ?"selected":""}>10 minutos</option>
+          <option value="1200" ${(c.timerSegundos||0)==1200 ?"selected":""}>20 minutos</option>
+          <option value="1800" ${(c.timerSegundos||0)==1800 ?"selected":""}>30 minutos</option>
+          <option value="3600" ${(c.timerSegundos||0)==3600 ?"selected":""}>60 minutos</option>
         </select>
       </div>
     </div>
@@ -408,8 +406,9 @@ async function renderTabPreguntas(c) {
   const bi = document.getElementById("b-iniciar");
   if (bi) bi.addEventListener("click", async () => {
     const timer = c.timerSegundos || 0;
+    const minutos = Math.round(timer / 60);
     const msg = timer > 0
-      ? `Se iniciará el concurso con ${timer} segundos por pregunta. ¿Continuar?`
+      ? `Se iniciará el concurso con ${minutos} minuto${minutos !== 1 ? "s" : ""} por pregunta. ¿Continuar?`
       : "Al iniciar, los concursantes podrán empezar a responder y ya no podrás editar las preguntas. ¿Continuar?";
     if (!confirm(msg)) return;
     const r = await apiPost("iniciarConcurso", { token: state.token, concursoId: c.id });
@@ -486,20 +485,27 @@ async function renderTabControl(c) {
     timerWrap.style.display = "";
     barraWrap.style.display = "";
 
+    // Cambiar la etiqueta del flap a MM:SS
+    const labelEl = timerWrap.querySelector(".flap__label");
+    if (labelEl) labelEl.textContent = "Restante";
+
     const fin = new Date(iniciadaEn).getTime() + timerSegundos * 1000;
 
     cuentaTimer = setInterval(() => {
       const restante = Math.max(0, fin - Date.now());
-      const segs     = Math.ceil(restante / 1000);
-      const pct      = (restante / (timerSegundos * 1000)) * 100;
+      const totalSegs = Math.ceil(restante / 1000);
+      const mm  = String(Math.floor(totalSegs / 60)).padStart(2, "0");
+      const ss  = String(totalSegs % 60).padStart(2, "0");
+      const pct = (restante / (timerSegundos * 1000)) * 100;
 
-      actualizarFlap("fl-timer", segs);
+      actualizarFlap("fl-timer", mm + ":" + ss);
       if (barra) {
         barra.style.width = pct + "%";
-        barra.className   = "timer-bar" + (pct < 25 ? " timer-bar--urgent" : pct < 55 ? " timer-bar--warning" : "");
+        barra.className   = "timer-bar" +
+          (pct < 10 ? " timer-bar--urgent" : pct < 30 ? " timer-bar--warning" : "");
       }
       if (restante <= 0) avanzarPregunta();
-    }, 200);
+    }, 500);
   }
 
   const pintar = async () => {
@@ -540,7 +546,8 @@ async function renderTabControl(c) {
       if (!acc) return;
       if (r.estado === "activo") {
         const esUltima = r.indicePregunta + 1 >= r.totalPreguntas;
-        const etiqAuto = r.timerSegundos > 0 ? " (automático)" : "";
+        const minutos  = r.timerSegundos > 0 ? Math.round(r.timerSegundos / 60) : 0;
+        const etiqAuto = minutos > 0 ? ` (auto · ${minutos} min)` : "";
         acc.innerHTML = `
           <button class="btn btn--gold btn--block" id="b-siguiente" style="margin-top:18px;">
             ${esUltima ? "Finalizar y revelar resultados" : "Siguiente pregunta" + etiqAuto}

@@ -132,7 +132,12 @@ async function mostrarUnirse() {
     const rr = await apiPost("registrarConcursante", { slug, nombre });
     if (!rr.ok) { errBox.innerHTML = `<div class="errorbox">${escapeHtml(rr.error)}</div>`; return; }
     guardarJugador({ concursanteId: rr.concursanteId, nombre: rr.nombre });
-    empezarPoll();
+    if (rr.reconectado) {
+      errBox.innerHTML = `<div class="okbox">¡Bienvenido de vuelta, ${escapeHtml(rr.nombre)}! Reconectando…</div>`;
+      setTimeout(empezarPoll, 900);
+    } else {
+      empezarPoll();
+    }
   });
 }
 
@@ -234,23 +239,25 @@ function pintarPregunta(r) {
       ? `<div class="okbox" style="margin-top:16px;">Respuesta enviada. Esperando la siguiente pregunta…</div>`
       : `<p class="muted small" style="margin-top:14px;">Elige una opción. Solo cuenta tu primera respuesta.</p>`}`);
 
-  // Cuenta regresiva local (actualización cada 100 ms, sin polling al servidor)
+  // Cuenta regresiva local en MM:SS (sin llamadas extra al servidor)
   if (mostrarTimer) {
     const fin = new Date(r.preguntaIniciadaEn).getTime() + timerSegs * 1000;
-    const barra = document.getElementById("play-barra");
+    const barra  = document.getElementById("play-barra");
     const segsEl = document.getElementById("play-segs");
     const tick = setInterval(() => {
-      const restante = Math.max(0, fin - Date.now());
+      const restante  = Math.max(0, fin - Date.now());
+      const totalSegs = Math.ceil(restante / 1000);
+      const mm  = String(Math.floor(totalSegs / 60)).padStart(2, "0");
+      const ss  = String(totalSegs % 60).padStart(2, "0");
       const pct = (restante / (timerSegs * 1000)) * 100;
-      const segs = Math.ceil(restante / 1000);
       if (barra) {
         barra.style.width = pct + "%";
-        barra.className   = "timer-bar" + (pct < 25 ? " timer-bar--urgent" : pct < 55 ? " timer-bar--warning" : "");
+        barra.className   = "timer-bar" +
+          (pct < 10 ? " timer-bar--urgent" : pct < 30 ? " timer-bar--warning" : "");
       }
-      if (segsEl) segsEl.textContent = segs + " s";
+      if (segsEl) segsEl.textContent = mm + ":" + ss;
       if (restante <= 0) clearInterval(tick);
-    }, 100);
-    // Limpiar si el DOM cambia antes de que acabe
+    }, 500);
     const observer = new MutationObserver(() => { clearInterval(tick); observer.disconnect(); });
     observer.observe(document.getElementById("app"), { childList: true });
   }
