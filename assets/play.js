@@ -146,6 +146,9 @@ async function mostrarUnirse() {
    ============================================================ */
 
 function empezarPoll() {
+  // Mostrar algo inmediatamente para que la pantalla nunca quede oscura
+  // mientras se espera la primera respuesta del servidor
+  shell(`<p class="pulse" style="margin-top:40px;text-align:center;">Conectando…</p>`);
   pintarEstado();
   state.pollTimer = setInterval(pintarEstado, POLL_NORMAL_MS);
 }
@@ -160,22 +163,24 @@ function claveEstado(r) {
 }
 
 async function pintarEstado() {
-  let r;
-  try {
-    r = await apiGet("estadoPublico", { slug });
-  } catch (e) {
-    // Error de red: backoff exponencial, no tocar la UI
+  const r = await apiGet("estadoPublico", { slug });
+
+  if (!r.ok) {
     state.errorCount++;
+    // Si es el primer fallo y la pantalla está vacía, mostramos mensaje
+    if (!state.ultimoEstado) {
+      shell(`
+        <div class="errorbox">
+          No se pudo conectar con el concurso.<br>
+          <span class="small">${escapeHtml(r.error)}</span>
+        </div>
+        <button class="btn btn--gold btn--block" style="margin-top:16px;"
+          onclick="location.reload()">Reintentar</button>`);
+    }
+    // Backoff exponencial para los reintentos automáticos
     detenerPoll();
     const delay = Math.min(POLL_ERROR_BASE * state.errorCount, POLL_ERROR_MAX);
     state.pollTimer = setTimeout(pintarEstado, delay);
-    return;
-  }
-
-  if (!r.ok) {
-    clearWallpaper();
-    shell(`<div class="errorbox">${escapeHtml(r.error)}</div>`);
-    detenerPoll();
     return;
   }
 
@@ -186,8 +191,8 @@ async function pintarEstado() {
   if (clave === state.ultimoEstado) return;
   state.ultimoEstado = clave;
 
-  if (r.estado === "borrador")    return pintarEspera(r);
-  if (r.estado === "finalizado")  { detenerPoll(); return pintarFinal(); }
+  if (r.estado === "borrador")   return pintarEspera(r);
+  if (r.estado === "finalizado") { detenerPoll(); return pintarFinal(); }
   pintarPregunta(r);
 }
 

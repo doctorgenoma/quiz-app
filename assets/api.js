@@ -10,33 +10,44 @@ const CONFIG = {
 /**
  * Llama a una acción de solo lectura (GET, sin token).
  *
- * El parámetro _t (timestamp) cambia en cada llamada, haciendo que la URL
- * sea única y el navegador nunca encuentre una respuesta cacheada.
- * No usamos cache:"no-store" porque en peticiones cross-origin algunos
- * navegadores añaden una cabecera Cache-Control que convierte la petición
- * en una preflight CORS — y Apps Script no responde a OPTIONS.
+ * - _t=Date.now() cambia la URL en cada llamada: el navegador nunca
+ *   devuelve una respuesta cacheada aunque no enviemos cabeceras extra.
+ * - NO usamos cache:"no-store" porque en peticiones cross-origin Chrome
+ *   y Firefox añaden una cabecera Cache-Control que activa un preflight
+ *   CORS, y Apps Script no responde a OPTIONS → fallo silencioso.
+ * - NUNCA lanza excepción: si algo falla devuelve { ok:false, error }.
  */
 async function apiGet(action, params = {}) {
-  const url = new URL(CONFIG.API_URL);
-  url.searchParams.set("action", action);
-  url.searchParams.set("_t", Date.now());
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString(), { method: "GET" });
-  return res.json();
+  try {
+    const url = new URL(CONFIG.API_URL);
+    url.searchParams.set("action", action);
+    url.searchParams.set("_t", Date.now());
+    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    const res = await fetch(url.toString(), { method: "GET" });
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    return { ok: false, error: "Error de red (" + err.message + "). Comprueba tu conexión." };
+  }
 }
 
 /**
  * Llama a una acción que escribe datos o requiere token (POST).
- * Se usa Content-Type: text/plain a propósito para evitar el
- * preflight CORS que Apps Script no sabe responder.
+ * Content-Type: text/plain evita el preflight CORS de Apps Script.
+ * NUNCA lanza excepción: si algo falla devuelve { ok:false, error }.
  */
 async function apiPost(action, payload = {}) {
-  const res = await fetch(CONFIG.API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({ action, ...payload })
-  });
-  return res.json();
+  try {
+    const res = await fetch(CONFIG.API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action, ...payload })
+    });
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    return { ok: false, error: "Error de red (" + err.message + "). Comprueba tu conexión." };
+  }
 }
 
 function getQueryParam(name) {
