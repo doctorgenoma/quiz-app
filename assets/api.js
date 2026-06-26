@@ -10,21 +10,18 @@ const CONFIG = {
 /**
  * Llama a una acción de solo lectura (GET, sin token).
  *
- * cache: "no-store"  — impide que el navegador devuelva una respuesta
- * cacheada del poll anterior (causa de que el jugador se quedara
- * bloqueado en la pregunta anterior sin poder avanzar).
- * El parámetro _t es un sello de tiempo adicional por si algún proxy
- * intermedio ignora la cabecera Cache-Control.
+ * El parámetro _t (timestamp) cambia en cada llamada, haciendo que la URL
+ * sea única y el navegador nunca encuentre una respuesta cacheada.
+ * No usamos cache:"no-store" porque en peticiones cross-origin algunos
+ * navegadores añaden una cabecera Cache-Control que convierte la petición
+ * en una preflight CORS — y Apps Script no responde a OPTIONS.
  */
 async function apiGet(action, params = {}) {
   const url = new URL(CONFIG.API_URL);
   url.searchParams.set("action", action);
   url.searchParams.set("_t", Date.now());
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    cache: "no-store"
-  });
+  const res = await fetch(url.toString(), { method: "GET" });
   return res.json();
 }
 
