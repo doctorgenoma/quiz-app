@@ -8,6 +8,7 @@ const slug = getQueryParam("c");
 const state = {
   jugador:          null,   // {concursanteId, nombre}
   ultimoEstado:     null,   // snapshot del último render para detectar cambios
+  ultimaPreguntaId: null,   // ID de la pregunta actualmente renderizada
   pollTimer:        null,
   errorCount:       0       // para backoff en fallos de red
 };
@@ -186,6 +187,14 @@ async function pintarEstado() {
 
   state.errorCount = 0;
 
+  // Si la pregunta cambió, forzar render limpio para que nunca quede
+  // el highlight de la respuesta anterior visible en la nueva pregunta.
+  const nuevaPreguntaId = r.pregunta?.id ?? null;
+  if (nuevaPreguntaId !== state.ultimaPreguntaId) {
+    state.ultimoEstado    = null;
+    state.ultimaPreguntaId = nuevaPreguntaId;
+  }
+
   // ── Skip si la pantalla no necesita cambiar ──
   const clave = claveEstado(r);
   if (clave === state.ultimoEstado) return;
@@ -284,18 +293,29 @@ function pintarPregunta(r) {
   }
 
   if (!yaRespondida) {
-    document.querySelectorAll("#opciones .opcion").forEach(btn => btn.addEventListener("click", async () => {
-      document.querySelectorAll("#opciones .opcion").forEach(b => b.disabled = true);
+    document.querySelectorAll("#opciones .opcion").forEach(btn => btn.addEventListener("click", () => {
       const opcion = btn.dataset.letra;
-      guardarRespuesta(p.id, opcion);
-      state.ultimoEstado = null;
 
-      const rr = await apiPost("enviarRespuesta",
-        { slug, concursanteId: state.jugador.concursanteId, preguntaId: p.id, opcion });
-      if (!rr.ok && !/ya has respondido/i.test(rr.error)) {
-        console.warn("enviarRespuesta:", rr.error);
-      }
-      pintarEstado();
+      // 1. INMEDIATO: guardar localmente y re-renderizar sin esperar la red.
+      //    El usuario ve el resultado en < 16 ms (un frame de pantalla).
+      guardarRespuesta(p.id, opcion);
+      state.ultimoEstado    = null;
+      state.ultimaPreguntaId = p.id; // ya sabemos la pregunta, evitar reset innecesario
+      pintarPregunta(r);             // re-render síncrono: muestra opción marcada + countdown
+
+      // 2. BACKGROUND: enviar al servidor sin bloquear la UI.
+      //    Si falla, la respuesta ya está en localStorage y el servidor
+      //    la rechazará como duplicada cuando se reintente.
+      apiPost("enviarRespuesta", {
+        slug,
+        concursanteId: state.jugador.concursanteId,
+        preguntaId:    p.id,
+        opcion
+      }).then(rr => {
+        if (!rr.ok && !/ya has respondido/i.test(rr.error)) {
+          console.warn("enviarRespuesta:", rr.error);
+        }
+      });
     }));
   }
 }
