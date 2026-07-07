@@ -29,6 +29,103 @@ function leerArchivoComoBase64(file) {
   });
 }
 
+/* ============================================================
+   CSV — parseo y generación (todo en cliente, sin librerías)
+   ============================================================ */
+
+/**
+ * Parsea un CSV robusto: respeta comillas dobles, saltos de línea
+ * dentro de campos entrecomillados y distintos separadores (, ; \t).
+ * Devuelve array de objetos usando la primera fila como cabeceras.
+ */
+function parseCsv(text) {
+  // Normalizar finales de línea
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+
+  // Detectar separador: ; para locales europeos, \t para TSV, , por defecto
+  const firstLine = text.split("\n")[0];
+  const sep = firstLine.includes(";") ? ";" : firstLine.includes("\t") ? "\t" : ",";
+
+  const rows  = [];
+  let field   = "";
+  let row     = [];
+  let inQuote = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch   = text[i];
+    const next = text[i + 1];
+
+    if (inQuote) {
+      if (ch === '"' && next === '"') { field += '"'; i++; }
+      else if (ch === '"')            { inQuote = false; }
+      else                            { field += ch; }
+    } else {
+      if      (ch === '"')  { inQuote = true; }
+      else if (ch === sep)  { row.push(field.trim()); field = ""; }
+      else if (ch === "\n") { row.push(field.trim()); rows.push(row); row = []; field = ""; }
+      else                  { field += ch; }
+    }
+  }
+  // Última celda / fila
+  row.push(field.trim());
+  if (row.some(c => c !== "")) rows.push(row);
+
+  if (rows.length < 2) return [];
+
+  const headers = rows[0].map(h => h.toLowerCase().trim());
+  return rows.slice(1).map(r => {
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = r[i] !== undefined ? r[i] : ""; });
+    return obj;
+  });
+}
+
+/**
+ * Convierte un array de preguntas en texto CSV listo para descargar.
+ * Todas las celdas se entrecomillan para máxima compatibilidad.
+ */
+function preguntasToCsv(preguntas) {
+  const cols = ["texto","opcionA","opcionB","opcionC","opcionD","correcta"];
+  const q    = s => '"' + String(s ?? "").replace(/"/g, '""') + '"';
+  const header = cols.join(",");
+  const body   = preguntas.map(p => cols.map(c => q(p[c])).join(",")).join("\n");
+  return header + "\n" + body;
+}
+
+/** Dispara la descarga de un archivo de texto desde el navegador. */
+function descargarTexto(contenido, nombreArchivo, mime) {
+  const blob = new Blob(["\uFEFF" + contenido], { type: mime }); // BOM para Excel
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = nombreArchivo;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Genera y descarga el CSV de plantilla vacía. */
+function descargarPlantilla() {
+  const ejemplo = [
+    ["¿Cuál es la capital de Francia?","París","Madrid","Roma","Berlín","A"],
+    ["¿En qué año llegó el hombre a la Luna?","1959","1969","1979","1989","B"]
+  ].map(r => r.map(c => '"' + c + '"').join(",")).join("\n");
+  descargarTexto(
+    "texto,opcionA,opcionB,opcionC,opcionD,correcta\n" + ejemplo,
+    "plantilla-preguntas.csv",
+    "text/csv;charset=utf-8"
+  );
+}
+
+/** Convierte un nombre en slug para usarlo como nombre de archivo. */
+function slugify_(text) {
+  return text.toString()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")
+    .slice(0, 60) || "concurso";
+}
+
+
 async function subirLogoSiHay(inputId, concursoId) {
   const input = document.getElementById(inputId);
   const file = input?.files?.[0];
@@ -319,17 +416,45 @@ async function renderTabPreguntas(c) {
 
   cont.innerHTML = `
     ${bloqueado ? `<div class="okbox">El concurso ya se ha iniciado: las preguntas quedan fijas.</div>` : ""}
+
+    <!-- ── Barra de herramientas: exportar / importar ── -->
+    <div class="card" style="margin-bottom:14px;">
+      <div class="row" style="flex-wrap:wrap;gap:10px;">
+        <div>
+          <h3 style="margin-bottom:2px;">Preguntas (${preguntas.length})</h3>
+          <span class="muted small">Exporta o importa en formato CSV compatible con Excel.</span>
+        </div>
+        <div class="row" style="gap:8px;flex-shrink:0;flex-wrap:wrap;">
+          <button class="btn btn--ghost btn--sm" id="b-plantilla">↓ Plantilla</button>
+          ${preguntas.length ? `<button class="btn btn--ghost btn--sm" id="b-exportar">↓ Exportar CSV</button>` : ""}
+          ${bloqueado ? "" : `<button class="btn btn--gold btn--sm" id="b-import-btn">↑ Importar CSV</button>`}
+        </div>
+      </div>
+      ${bloqueado ? "" : `
+      <div id="import-panel" style="display:none;margin-top:14px;border-top:1px solid var(--panel-edge);padding-top:14px;">
+        <label>Archivo CSV</label>
+        <input type="file" id="import-file" accept=".csv,.tsv,.txt" />
+        <span class="muted small">Primera fila = cabeceras. Columnas requeridas:
+          <code>texto, opcionA, opcionB, opcionC, opcionD, correcta</code></span>
+        <div id="import-preview" style="margin-top:12px;"></div>
+      </div>`}
+    </div>
+
+    <!-- ── Lista de preguntas ── -->
     <div id="lista-preguntas" class="stack">
       ${preguntas.map((p, i) => `
         <div class="card">
           <div class="row"><strong>${i + 1}. ${escapeHtml(p.texto)}</strong>
             ${bloqueado ? "" : `<button class="btn btn--ghost btn--sm" data-del="${p.id}">Eliminar</button>`}</div>
           <div class="small muted" style="margin-top:8px;line-height:1.8;">
-            ${["A","B","C","D"].map(L => `${L === p.correcta ? "✓" : "·"} ${L}) ${escapeHtml(p["opcion"+L])}`).join("<br/>")}
+            ${["A","B","C","D"].map(L =>
+              `${L === p.correcta ? "✓" : "·"} ${L}) ${escapeHtml(p["opcion"+L])}`).join("<br/>")}
           </div>
-        </div>`).join("") || `<p class="muted">Sin preguntas todavía.</p>`}
+        </div>`).join("") || `<p class="muted">Sin preguntas todavía. Añade una a mano o importa un CSV.</p>`}
     </div>
+
     ${bloqueado ? "" : `
+    <!-- ── Añadir pregunta manualmente ── -->
     <div class="card" style="margin-top:18px;">
       <h3>Añadir pregunta</h3>
       <form id="f-pregunta">
@@ -345,7 +470,8 @@ async function renderTabPreguntas(c) {
         </div>
         <label>Respuesta correcta</label>
         <select id="pq-correcta">
-          <option value="A">A</option><option value="B">B</option><option value="C">C</option><option value="D">D</option>
+          <option value="A">A</option><option value="B">B</option>
+          <option value="C">C</option><option value="D">D</option>
         </select>
         <button class="btn btn--gold" style="margin-top:16px;" type="submit">Guardar pregunta</button>
       </form>
@@ -370,52 +496,173 @@ async function renderTabPreguntas(c) {
     <button class="btn btn--gold btn--block" id="b-iniciar" style="margin-top:20px;">Iniciar concurso</button>` : ""}
     `}`;
 
+  /* ── Listeners: barra de herramientas ── */
+
+  document.getElementById("b-plantilla")
+    ?.addEventListener("click", descargarPlantilla);
+
+  document.getElementById("b-exportar")
+    ?.addEventListener("click", () => {
+      descargarTexto(
+        preguntasToCsv(preguntas),
+        slugify_(c.nombre) + "-preguntas.csv",
+        "text/csv;charset=utf-8"
+      );
+    });
+
+  document.getElementById("b-import-btn")
+    ?.addEventListener("click", () => {
+      const panel = document.getElementById("import-panel");
+      if (panel) panel.style.display = panel.style.display === "none" ? "" : "none";
+    });
+
+  document.getElementById("import-file")
+    ?.addEventListener("change", async ev => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const preview = document.getElementById("import-preview");
+      if (!preview) return;
+
+      preview.innerHTML = `<p class="muted small">Leyendo archivo…</p>`;
+
+      const texto = await new Promise((res, rej) => {
+        const rd = new FileReader();
+        rd.onload  = () => res(rd.result);
+        rd.onerror = () => rej(new Error("No se pudo leer el archivo."));
+        rd.readAsText(file, "utf-8");
+      }).catch(e => { preview.innerHTML = `<div class="errorbox">${escapeHtml(e.message)}</div>`; return null; });
+      if (!texto) return;
+
+      const filas = parseCsv(texto);
+      if (!filas.length) {
+        preview.innerHTML = `<div class="errorbox">El archivo está vacío o no tiene el formato esperado.</div>`; return;
+      }
+
+      // Detectar columnas necesarias
+      const muestra = filas[0];
+      const cols = ["texto","opciona","opcionb","opcionc","opciond","correcta"];
+      const cabeceras = Object.keys(muestra).map(k => k.toLowerCase());
+      const faltantes = cols.filter(c => !cabeceras.includes(c));
+      if (faltantes.length) {
+        preview.innerHTML = `<div class="errorbox">Faltan las columnas: <strong>${faltantes.join(", ")}</strong>.<br>
+          Descarga la plantilla para ver el formato correcto.</div>`; return;
+      }
+
+      // Normalizar claves a capitalización correcta
+      const normalizar = f => ({
+        texto:    f.texto    || f.Texto    || "",
+        opcionA:  f.opciona  || f.opcionA  || f.OpcionA  || "",
+        opcionB:  f.opcionb  || f.opcionB  || f.OpcionB  || "",
+        opcionC:  f.opcionc  || f.opcionC  || f.OpcionC  || "",
+        opcionD:  f.opciond  || f.opcionD  || f.OpcionD  || "",
+        correcta: (f.correcta || f.Correcta || "").toUpperCase().trim()
+      });
+      const normalizadas = filas.map(normalizar);
+
+      // Vista previa de las primeras 3 filas
+      const hayExistentes = preguntas.length > 0;
+      preview.innerHTML = `
+        <p class="muted small">${normalizadas.length} pregunta(s) detectada(s). Vista previa:</p>
+        ${normalizadas.slice(0, 3).map((p, i) => `
+          <div class="card" style="padding:10px 14px;margin-bottom:8px;">
+            <strong class="small">${i+1}. ${escapeHtml(p.texto)}</strong>
+            <div class="small muted" style="margin-top:4px;line-height:1.7;">
+              ${["A","B","C","D"].map(L =>
+                `${p.correcta === L ? "✓" : "·"} ${L}) ${escapeHtml(p["opcion"+L])}`).join(" &nbsp; ")}
+            </div>
+          </div>`).join("")}
+        ${normalizadas.length > 3 ? `<p class="muted small">…y ${normalizadas.length - 3} más.</p>` : ""}
+        ${hayExistentes ? `
+        <div class="card" style="margin-top:10px;border-color:var(--gold);">
+          <p class="small" style="margin:0 0 10px;"><strong>¿Qué hacer con las ${preguntas.length} preguntas existentes?</strong></p>
+          <div class="row" style="gap:8px;flex-wrap:wrap;">
+            <button class="btn btn--ghost btn--sm" id="b-import-añadir">Añadir al final</button>
+            <button class="btn btn--danger btn--sm" id="b-import-reemplazar">Reemplazar todo</button>
+          </div>
+        </div>` : `
+        <button class="btn btn--gold" id="b-import-añadir" style="margin-top:10px;">
+          Importar ${normalizadas.length} pregunta(s)
+        </button>`}
+        <div id="import-resultado" style="margin-top:10px;"></div>`;
+
+      const doImport = async (reemplazar) => {
+        const btnA = document.getElementById("b-import-añadir");
+        const btnR = document.getElementById("b-import-reemplazar");
+        const res  = document.getElementById("import-resultado");
+        if (btnA) btnA.disabled = true;
+        if (btnR) btnR.disabled = true;
+        if (res)  res.innerHTML = `<p class="muted small pulse">Importando…</p>`;
+
+        const rr = await apiPost("importarPreguntas", {
+          token: state.token, concursoId: c.id,
+          preguntas: normalizadas, reemplazar
+        });
+        if (!rr.ok) {
+          if (res) res.innerHTML = `<div class="errorbox">${escapeHtml(rr.error)}</div>`;
+          if (btnA) btnA.disabled = false;
+          if (btnR) btnR.disabled = false;
+          return;
+        }
+        // Éxito: recargar la pestaña entera
+        renderTabPreguntas(c);
+      };
+
+      document.getElementById("b-import-añadir")
+        ?.addEventListener("click", () => doImport(false));
+      document.getElementById("b-import-reemplazar")
+        ?.addEventListener("click", () => {
+          if (!confirm(`¿Seguro? Se borrarán las ${preguntas.length} preguntas actuales y se reemplazarán por las ${normalizadas.length} del archivo.`)) return;
+          doImport(true);
+        });
+    });
+
+  /* ── Listeners: lista y formulario ── */
+
   cont.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", async () => {
     if (!confirm("¿Eliminar esta pregunta?")) return;
-    const r = await apiPost("eliminarPregunta", { token: state.token, preguntaId: b.dataset.del });
-    if (!r.ok) return alert(r.error);
+    const rr = await apiPost("eliminarPregunta", { token: state.token, preguntaId: b.dataset.del });
+    if (!rr.ok) return alert(rr.error);
     renderTabPreguntas(c);
   }));
 
-  const selTimer = document.getElementById("sel-timer");
-  if (selTimer) selTimer.addEventListener("change", async () => {
-    const r = await apiPost("configurarTimer", {
-      token: state.token, concursoId: c.id, timerSegundos: selTimer.value
+  document.getElementById("sel-timer")
+    ?.addEventListener("change", async ev => {
+      const rr = await apiPost("configurarTimer", {
+        token: state.token, concursoId: c.id, timerSegundos: ev.target.value
+      });
+      if (!rr.ok) { alert(rr.error); return; }
+      c.timerSegundos = rr.timerSegundos;
     });
-    if (!r.ok) { alert(r.error); return; }
-    // Actualizar el objeto local para que renderTabControl lo vea
-    c.timerSegundos = r.timerSegundos;
-  });
 
-  const fp = document.getElementById("f-pregunta");
-  if (fp) fp.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const r = await apiPost("guardarPregunta", {
-      token: state.token, concursoId: c.id,
-      texto: document.getElementById("pq-texto").value.trim(),
-      opcionA: document.getElementById("pq-a").value.trim(),
-      opcionB: document.getElementById("pq-b").value.trim(),
-      opcionC: document.getElementById("pq-c").value.trim(),
-      opcionD: document.getElementById("pq-d").value.trim(),
-      correcta: document.getElementById("pq-correcta").value
+  document.getElementById("f-pregunta")
+    ?.addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const rr = await apiPost("guardarPregunta", {
+        token: state.token, concursoId: c.id,
+        texto:    document.getElementById("pq-texto").value.trim(),
+        opcionA:  document.getElementById("pq-a").value.trim(),
+        opcionB:  document.getElementById("pq-b").value.trim(),
+        opcionC:  document.getElementById("pq-c").value.trim(),
+        opcionD:  document.getElementById("pq-d").value.trim(),
+        correcta: document.getElementById("pq-correcta").value
+      });
+      if (!rr.ok) return alert(rr.error);
+      renderTabPreguntas(c);
     });
-    if (!r.ok) return alert(r.error);
-    renderTabPreguntas(c);
-  });
 
-  const bi = document.getElementById("b-iniciar");
-  if (bi) bi.addEventListener("click", async () => {
-    const timer = c.timerSegundos || 0;
-    const minutos = Math.round(timer / 60);
-    const msg = timer > 0
-      ? `Se iniciará el concurso con ${minutos} minuto${minutos !== 1 ? "s" : ""} por pregunta. ¿Continuar?`
-      : "Al iniciar, los concursantes podrán empezar a responder y ya no podrás editar las preguntas. ¿Continuar?";
-    if (!confirm(msg)) return;
-    const r = await apiPost("iniciarConcurso", { token: state.token, concursoId: c.id });
-    if (!r.ok) return alert(r.error);
-    state.pestana = "control";
-    render();
-  });
+  document.getElementById("b-iniciar")
+    ?.addEventListener("click", async () => {
+      const timer   = c.timerSegundos || 0;
+      const minutos = Math.round(timer / 60);
+      const msg = timer > 0
+        ? `Se iniciará el concurso con ${minutos} minuto${minutos !== 1 ? "s" : ""} por pregunta. ¿Continuar?`
+        : "Al iniciar, los concursantes podrán empezar a responder y ya no podrás editar las preguntas. ¿Continuar?";
+      if (!confirm(msg)) return;
+      const rr = await apiPost("iniciarConcurso", { token: state.token, concursoId: c.id });
+      if (!rr.ok) return alert(rr.error);
+      state.pestana = "control";
+      render();
+    });
 }
 
 /* --- tab control en vivo --- */
